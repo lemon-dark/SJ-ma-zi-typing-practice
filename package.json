@@ -1,0 +1,19 @@
+{
+  "name": "ma-zi",
+  "version": "1.0.0",
+  "description": "",
+  "main": "electron.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "pinyin-pro": "^3.28.2"
+  },
+  "devDependencies": {
+    "electron": "^43.3.0"
+  }
+}
