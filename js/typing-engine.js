@@ -219,23 +219,11 @@ const TypingEngine = (function () {
 
       const seg = buildSegment(idx, state.pinyinBuffer);
 
-      // 完整匹配到段尾 → 批量推进（一口气打整句到句尾标点前 → 一次推进整句汉字）
-      if (seg.reachedEnd && seg.acc.length > 0) {
-        // 缓冲恰好等于整段匹配串（主读音或段尾多音字备选读音）→ 推进整段
-        if (seg.boundaryFull >= seg.cnt) {
-          commitSegment(idx, seg.cnt, seg.acc, seg.altSeg);
-          state.pinyinBuffer = "";
-          break;
-        }
-        // 缓冲是段前缀 / 超出段尾（跨过标点继续）→ 推进已完整匹配的字，剩余缓冲继续
-        if (seg.fullCnt > 0) {
-          commitSegment(idx, seg.fullCnt, seg.acc, seg.altSeg);
-          state.pinyinBuffer = state.pinyinBuffer.slice(consumedLen(idx, seg.fullCnt, seg.altSeg));
-          continue;
-        }
-      }
-
-      // 完整匹配到中间字边界（段未到尾）→ 不推进，等待更多输入或停顿 flush
+      // ★ 不自动提交（2026-08-13 修复"字母凭空消失"）：
+      // 无论缓冲匹配到段尾还是中间字边界，一律不推进、不清缓冲。
+      // 用户按空格键时手动调用 flushPinyin() 统一提交。
+      // 这样拼音永远留在输入框里，跟聊天软件输入法行为一致。
+      // 完整匹配到字边界（段尾或段中）→ 不推进，等待空格键手动提交
       // （如打 qu 匹配「曲」后继续打 q → quq 仍是「曲曲」前缀，不断档不清零）
       if (seg.boundaryFull > 0) break;
 

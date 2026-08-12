@@ -16,6 +16,7 @@ const App = (function () {
   function handleCompositionEnd(e) {
     const input = e.target;
     if (!input || !input.classList || !input.classList.contains("line-input")) return;
+    const ln = parseInt(input.dataset.line, 10);
     if (currentMode !== "pinyin") {
       input.value = "";
       return;
@@ -25,8 +26,13 @@ const App = (function () {
     // 输入框），此时 value 不再是"待提交的上屏文本"，兜底再提交会把回写内容误判为新输入。
     if (input.dataset.imeDone) { delete input.dataset.imeDone; return; }
     // 只读 input.value（事件 data 在部分环境为空；且若 onInput 已处理，value 已被清空，天然去重防重复提交）
+    // ★ 2026-08-13 每行一个输入框修复：input.value 含整行历史已输入内容（如已打"床"、
+    //   本次上屏"前" → value="床前"）。必须只取本次组合的增量（减去组合开始前的 base），
+    //   否则历史字被重复提交（症状："床床前"、第 2 字被判错）。
     const commitFromValue = () => {
-      const v = input.value || "";
+      const base = composeBaseValueMap[ln] || "";
+      let v = input.value || "";
+      if (base && v.startsWith(base)) v = v.slice(base.length);
       // 汉字优先（两级验证），无汉字则提交标点
       const hanzi = Array.from(v).filter((c) => /[\u4e00-\u9fff]/.test(c)).join("");
       if (hanzi) {
@@ -415,8 +421,16 @@ const App = (function () {
       // 拼音模式：字母与标点一律不 preventDefault，交给 IME/input 事件处理
       // （preventDefault 会挡住输入法上屏汉字/标点；字母还要启动组合弹候选）
       if (currentMode === "pinyin") {
-        // 空格不产生拼音输入（避免污染输入框破坏增量计算），直接忽略
-        if (e.key === " ") e.preventDefault();
+        // 空格键：手动提交当前拼音缓冲（"字母凭空消失"修复：不再自动清缓冲）
+        if (e.key === " ") {
+          e.preventDefault();
+          if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+          if (TypingEngine.flushPinyin()) {
+            updateDisplay();
+            const st = TypingEngine.getState();
+            if (st && st.isComplete) handleComplete();
+          }
+        }
         return;
       }
       e.preventDefault();
@@ -455,8 +469,7 @@ const App = (function () {
         prevIdx = state.currentIndex;
       }
     }
-    // 拼音模式：连续输入不立即分词，停顿后自动推进（见 scheduleFlush）
-    if (currentMode === "pinyin") scheduleFlush();
+    // 拼音模式：不自动分词，用户按空格键手动提交（见 onKeyDown 空格分支）
     return hadError;
   }
 
@@ -494,9 +507,31 @@ const App = (function () {
       prevInputValueMap[ln] = newValue;
     }
 
-    // 上屏汉字优先处理（含 IME 组合中 isComposing=true 的 input 事件——实测真实输入法
-    // 上屏时其 value 已是汉字）：只要增量含汉字就做两级验证并清空该字输入框，
-    // 否则汉字会残留输入框、进度永远不推进。
+    // IME 组合期间：字母不喂引擎（引擎停在当前字，避免先判对/推进导致上屏复核错位），
+    // 只记录组合拼音，供上屏后两级验证；同时取消停顿 flush（组合结束统一处理）。
+    // ⚠️ value 为空（组合结束清空组合文本的 input 事件）时**不覆盖** imePinyin：
+    // 否则 compositionend 时 imePinyin 已被清空，无法把组合拼音还给引擎
+    // （症状："最多三个字母就强制清除"——取消组合/无候选词时已打字母全部丢失）。
+    // ★ 2026-08-13 修复"字母凭空消失"（自动上屏丢字母）：组合期间（isComposing=true）
+    //   绝不 commit / syncLineInputs。否则真实输入法自动上屏（打 chuangqian 时 chuang
+    //   自动上屏"床"、组合继续 q）会触发 updateDisplay→syncLineInputs 重写 input.value，
+    //   把刚打的新组合字母 q 清掉、破坏 IME 组合。上屏统一交给 compositionend 处理。
+    if (e.isComposing) {
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      if (currentMode === "pinyin" && newValue) {
+        // 只取组合区增量（减去组合开始前该行的普通文本），防止与保留字母拼接
+        let compText = newValue;
+        const base = composeBaseValueMap[ln] || "";
+        if (base && newValue.startsWith(base)) {
+          compText = newValue.slice(base.length);
+        }
+        if (/^[a-z]*$/i.test(compText) && compText) imePinyin = compText;
+      }
+      return;
+    }
+
+    // 非组合：上屏汉字/标点优先处理（即时上屏输入法，无 composition 事件；
+    // 或英文直输半角标点）。只要增量含汉字就做两级验证并清空该字输入框。
     if (addedStr && currentMode === "pinyin") {
       const hanziStr = Array.from(addedStr).filter((c) => /[\u4e00-\u9fff]/.test(c)).join("");
       if (hanziStr) {
@@ -522,25 +557,6 @@ const App = (function () {
         if (state && state.isComplete) handleComplete();
         return;
       }
-    }
-
-    // IME 组合期间：字母不喂引擎（引擎停在当前字，避免先判对/推进导致上屏复核错位），
-    // 只记录组合拼音，供上屏后两级验证；同时取消停顿 flush（组合结束统一处理）。
-    // ⚠️ value 为空（组合结束清空组合文本的 input 事件）时**不覆盖** imePinyin：
-    // 否则 compositionend 时 imePinyin 已被清空，无法把组合拼音还给引擎
-    // （症状："最多三个字母就强制清除"——取消组合/无候选词时已打字母全部丢失）。
-    if (e.isComposing) {
-      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-      if (currentMode === "pinyin" && newValue) {
-        // 只取组合区增量（减去组合开始前该行的普通文本），防止与保留字母拼接
-        let compText = newValue;
-        const base = composeBaseValueMap[ln] || "";
-        if (base && newValue.startsWith(base)) {
-          compText = newValue.slice(base.length);
-        }
-        if (/^[a-z]*$/i.test(compText) && compText) imePinyin = compText;
-      }
-      return;
     }
 
     // 非组合：增量计算新增字符。
