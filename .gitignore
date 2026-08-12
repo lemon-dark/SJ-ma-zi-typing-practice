@@ -2,6 +2,7 @@ node_modules/
 打包版/
 _scratch/
 _scratch_user_msgs.txt
+dev_pages.txt
 zhipu-vision/zhipu-key.txt
 *.log
 .DS_Store
