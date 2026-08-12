@@ -47,26 +47,26 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, 'index.html'));
 
-  // 支持 Ctrl+/Ctrl- 缩放页面（Ctrl+0 恢复默认；Ctrl+滚轮 Chromium 原生支持，无需代码）
-  const { webContents } = win;
-  webContents.on('before-input-event', (event, input) => {
-    if ((input.control || input.meta) && input.type === 'keyDown') {
-      if (input.key === '=' || input.key === '+') {
-        webContents.setZoomLevel(Math.min(webContents.getZoomLevel() + 0.5, 5));
-        event.preventDefault();
-      } else if (input.key === '-') {
-        webContents.setZoomLevel(Math.max(webContents.getZoomLevel() - 0.5, -5));
-        event.preventDefault();
-      } else if (input.key === '0') {
-        webContents.setZoomLevel(0);
-        event.preventDefault();
-      }
-    }
-  });
+  // Ctrl+滚轮 / Ctrl++- / 触控板捏合缩放
+  win.webContents.setVisualZoomLevelLimits(1, 5);
 }
 
 app.whenReady().then(() => {
-  Menu.setApplicationMenu(null);
+  // 应用菜单：保留缩放快捷键（Ctrl++/Ctrl+-/Ctrl+0），其余精简
+  const template = [
+    {
+      label: 'View',
+      submenu: [
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { role: 'resetZoom' },
+        { type: 'separator' },
+        { role: 'toggleDevTools' },
+      ],
+    },
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
 
   // 管理员权限会让单实例锁在跨权限场景下失效（管理员实例先开、普通实例后开时会双开）。
   // 本应用无需管理员权限，检测到后提示并退出，引导用户改用普通方式启动。

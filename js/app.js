@@ -472,7 +472,7 @@ const App = (function () {
         const state = TypingEngine.getState();
         if (state && state.isComplete) handleComplete();
       }
-    }, 800);
+    }, 500);
   }
 
   function onInput(e) {
