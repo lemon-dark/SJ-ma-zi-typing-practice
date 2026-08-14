@@ -10,7 +10,9 @@ const TypingEngine = (function () {
     } else {
       tokens = [];
       for (const ch of text) {
-        tokens.push({ char: ch, type: ch === "\n" ? "newline" : "char" });
+        // \r（Windows 换行）也按 newline 处理：直接输入模式遇到 \r 会被当普通字符
+        // 要求输入（无对应按键）→ 永远打不过卡死。统一跳过。
+        tokens.push({ char: ch, type: ch === "\n" || ch === "\r" ? "newline" : "char" });
       }
     }
 

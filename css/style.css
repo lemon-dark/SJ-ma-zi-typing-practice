@@ -79,6 +79,19 @@ ul { list-style: none; }
 .topbar-left { display: flex; align-items: center; gap: 12px; }
 .topbar-right { display: flex; align-items: center; gap: 8px; }
 
+/* 页面缩放控件（topbar）：− / 100% / +，100% 按钮点击恢复原始大小 */
+.zoom-controls { display: flex; align-items: center; gap: 2px; margin-right: 4px; }
+.zoom-btn { font-size: 16px; font-weight: 600; }
+.zoom-percent {
+  min-width: 54px; height: 28px; padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex; align-items: center; justify-content: center;
+  transition: background var(--transition), color var(--transition);
+}
+.zoom-percent:hover { background: var(--bg-hover); color: var(--text); }
+
 .sidebar-toggle { display: none; padding: 6px; border-radius: var(--radius-sm); color: var(--text-secondary); }
 .sidebar-toggle:hover { background: var(--bg-hover); }
 
@@ -255,6 +268,7 @@ ul { list-style: none; }
   padding-bottom: 16px;
   border-bottom: 1px solid var(--border);
 }
+.toolbar-actions { display: flex; gap: 8px; align-items: center; }
 
 .live-stats { display: flex; gap: 24px; }
 .live-stat { text-align: center; }
@@ -541,19 +555,94 @@ ul { list-style: none; }
 .game-overlay h2 { font-size: 28px; margin-bottom: 12px; }
 .game-overlay p { font-size: 16px; margin-bottom: 20px; opacity: 0.9; }
 
-/* ===== Keyboard Hint ===== */
+/* ===== Keyboard Hint（虚拟键盘 + 指法提示） =====
+   挂载在 body（app.js applyKeyboardHint），position:fixed 悬浮于视口底部，不占文档流：
+   文字区用满全屏高度；键盘显示时 body.has-keyboard 给 .main-content 加 padding-bottom，
+   内容可滚动到键盘上方 → 不遮挡也不浪费文字区空间 */
 .keyboard-hint {
-  margin-top: 20px;
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  padding: 10px 16px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
+  opacity: 0.97;
+  user-select: none;
+}
+/* 键盘悬浮时文字区底部避让：最后一行可滚动到键盘上方，不会被盖住 */
+body.has-keyboard .main-content { padding-bottom: 300px; }
+/* 虚幻手掌：半透明双手俯视，手指朝下悬在键盘上方，轮到某指时该指「按下」触键 */
+.hand-hint {
+  position: relative;
+  width: 100%;
+  height: 128px;
+  pointer-events: none;
+}
+/* 二次元手 SVG（v2 生成器产物）定位 */
+.hand-svg {
+  top: 4px;
+  width: 180px;
+  height: auto;
+  opacity: 0.8;
+}
+.hand-svg.hand-left { left: 24%; transform: translateX(-50%); }
+.hand-svg.hand-right { left: 76%; transform: translateX(-50%); }
+/* SVG 内手指按压（app.js 只加 .press，靠 CSS transform 下移触键） */
+.hand-svg .finger { transition: transform 0.12s ease; }
+.hand-svg .finger.press { transform: translateY(18px); }
+.hand-palm {
+  position: absolute;
+  top: 0;
+  width: 46%;
+  height: 46px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.32), rgba(255, 255, 255, 0.12));
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-radius: 22px 22px 14px 14px;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+.palm-left { left: 1%; }
+.palm-right { right: 1%; }
+.finger {
+  position: absolute;
+  top: 36px;
+  width: 15px;
+  height: 52px;
+  margin-left: -7.5px;
+  border-radius: 10px 10px 9px 9px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.3));
+  border: 1px solid rgba(127, 127, 127, 0.45);
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.15);
+  transition: transform 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+/* 手指按标准指法列定位（相对键盘 12 列近似） */
+.finger[data-finger="left-pinky"] { left: 8%; }
+.finger[data-finger="left-ring"] { left: 17%; }
+.finger[data-finger="left-middle"] { left: 26%; }
+.finger[data-finger="left-index"] { left: 37%; }
+.finger[data-finger="right-index"] { left: 54%; }
+.finger[data-finger="right-middle"] { left: 66%; }
+.finger[data-finger="right-ring"] { left: 75%; }
+.finger[data-finger="right-pinky"] { left: 84%; }
+/* 轮到该手指：向下按压触键 + 变亮 + 投影 */
+.finger.press {
+  transform: translateY(20px);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.65));
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
 }
 .keyboard-row { display: flex; gap: 4px; }
 .key {
-  min-width: 32px; height: 32px;
+  position: relative;
+  min-width: 32px; height: 34px;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
   display: flex; align-items: center; justify-content: center;
   font-size: 12px; font-family: monospace;
   background: var(--bg-elevated);
@@ -561,7 +650,7 @@ ul { list-style: none; }
   transition: all 0.1s;
 }
 .key.active { background: var(--accent); color: #fff; border-color: var(--accent); transform: translateY(2px); }
-.key.next { border-color: var(--accent); color: var(--accent); }
+.key.next { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 2px var(--accent-light); }
 
 /* ===== Utility ===== */
 .empty-state { text-align: center; padding: 60px 20px; color: var(--text-muted); }
@@ -651,4 +740,10 @@ ul { list-style: none; }
   color: var(--text-muted);
   opacity: 0.7;
 }
+
+/* ===== 虚拟键盘可拖动（2026-08-13 用户诉求：让虚拟键盘可以被鼠标拖动） =====
+   按住键盘任意处可拖动改变悬浮位置（位置持久化，双击恢复默认居中底部） */
+.keyboard-hint { cursor: grab; }
+.keyboard-hint.dragging { cursor: grabbing; opacity: 0.9; }
+.keyboard-hint * { pointer-events: none; }
 

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog } = require('electron');
+const { app, BrowserWindow, Menu, dialog, screen, ipcMain } = require('electron');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
@@ -30,11 +30,20 @@ if (!gotTheLock) {
 }
 
 function createWindow() {
+  // 窗口尺寸按屏幕可用区域自适应，避免小屏幕（尤其 200% 缩放时逻辑分辨率减半）
+  // 下窗口比屏幕还大、内容只显示左上角一小块、其余全是空白。
+  // DIP 与逻辑像素相同：屏幕 1600×1000 @200% → 逻辑 800×500，窗口就取 800×500。
+  const wa = screen.getPrimaryDisplay().workAreaSize;
+  const width = Math.min(1280, wa.width);
+  const height = Math.min(840, wa.height);
+  const minW = Math.min(960, wa.width);
+  const minH = Math.min(640, wa.height);
+
   const win = new BrowserWindow({
-    width: 1280,
-    height: 840,
-    minWidth: 960,
-    minHeight: 640,
+    width,
+    height,
+    minWidth: minW,
+    minHeight: minH,
     frame: true,
     title: '码字 - 打字练习',
     backgroundColor: '#f0f2f5',
@@ -42,13 +51,48 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
-  win.loadFile(path.join(__dirname, 'index.html'));
+  // Ctrl+滚轮页面缩放（Windows 鼠标缩放的正解）：
+  // 关键坑 1：before-input-event 只收键盘事件（input.type 只能是 keyUp/keyDown），
+  // 鼠标滚轮永远不会触发它——之前"加了代码没用"的根因就在这。
+  // 正确做法是监听 zoom-changed：用户用滚轮请求缩放时（Windows 上即 Ctrl+滚轮）
+  // 触发，参数 zoomDirection 为 'in'/'out'，再手动 setZoomLevel 应用，
+  // 行为与 Chrome 浏览器一致。范围 zoomLevel -4~6 ≈ 48%~300%。
+  // 关键坑 2：绝不能调用 setVisualZoomLevelLimits —— 它会启用另一套独立的
+  // "视觉缩放(visual zoom)"，一旦残留缩放状态（如 50%），setZoomLevel 无法重置，
+  // 页面内容会被裁剪到左上角一小块、其余全是空白（用户实测过"只剩四分之一"）。
+  win.webContents.on('zoom-changed', (event, zoomDirection) => {
+    const step = 0.5; // 每格 ≈ 9.5%（与菜单 zoomIn 步长一致）
+    const cur = win.webContents.getZoomLevel();
+    const next = Math.min(6, Math.max(-4, cur + (zoomDirection === 'in' ? step : -step)));
+    win.webContents.setZoomLevel(Math.round(next * 100) / 100);
+    // 通知渲染进程刷新 topbar 百分比显示（页面通过 preload 订阅 zoom-updated）
+    win.webContents.send('zoom-updated', Math.round(next * 100) / 100);
+  });
 
-  // Ctrl+滚轮 / Ctrl++- / 触控板捏合缩放
-  win.webContents.setVisualZoomLevelLimits(1, 5);
+  // 页面按钮（topbar 缩放控件）请求调整缩放：同样收口到 setZoomLevel + 通知
+  ipcMain.on('zoom-set', (event, level) => {
+    const w = BrowserWindow.fromWebContents(event.sender);
+    if (!w) return;
+    const clamped = Math.min(6, Math.max(-4, Number(level) || 0));
+    w.webContents.setZoomLevel(clamped);
+    w.webContents.send('zoom-updated', clamped);
+  });
+
+  // 每次启动强制回到 100% 缩放：Chromium 会把上次的缩放比例持久化到
+  // 用户数据目录，若上次 Ctrl+滚轮放大过（如 131%+），重启后界面内容
+  // 会放大到只占窗口左上角，其余全是空白背景，看起来像"白板"。
+  // 这里在页面加载完成后统一重置，保证每次打开都是正常比例；
+  // 用户随时可以用 Ctrl+滚轮 / Ctrl+0 再次调整。
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.setZoomLevel(0);
+    win.webContents.send('zoom-updated', 0);
+  });
+
+  win.loadFile(path.join(__dirname, 'index.html'));
 }
 
 app.whenReady().then(() => {

@@ -102,10 +102,12 @@ const UI = (function () {
 
     setHTML(`
       <div class="fade-in">
-        <h2 class="section-title">${pageConfig.title}</h2>
-        <p class="section-desc">${pageConfig.desc}</p>
-        <div class="mode-tabs">${tabsHTML}</div>
-        <div id="contentPicker"></div>
+        <div id="pickerView">
+          <h2 class="section-title">${pageConfig.title}</h2>
+          <p class="section-desc">${pageConfig.desc}</p>
+          <div class="mode-tabs">${tabsHTML}</div>
+          <div id="contentPicker"></div>
+        </div>
         <div id="typingContainer"></div>
       </div>
     `);
@@ -161,7 +163,10 @@ const UI = (function () {
               <div class="live-stat-value" id="liveProgress">0/0</div>
             </div>
           </div>
-          <button class="btn btn-outline" id="restartBtn">重新开始</button>
+          <div class="toolbar-actions">
+            <button class="btn btn-outline" id="backToListBtn">← 返回列表</button>
+            <button class="btn btn-outline" id="restartBtn">重新开始</button>
+          </div>
         </div>
 
         <div class="text-display ${isPinyin ? "pinyin-mode" : "direct-mode"}" id="textDisplay"></div>
@@ -169,25 +174,51 @@ const UI = (function () {
         <div class="progress-bar-container">
           <div class="progress-bar-fill" id="progressBar" style="width:0%"></div>
         </div>
-
-        ${settings.keyboardHint ? renderKeyboard() : ""}
       </div>
     `;
   }
 
+  // QWERTY 标准指法映射（touch typing）：每键归属的手指
+  const FINGER_KEYS = {
+    "left-pinky": ["q", "a", "z"],
+    "left-ring": ["w", "s", "x"],
+    "left-middle": ["e", "d", "c"],
+    "left-index": ["r", "f", "v", "t", "g", "b"],
+    "right-index": ["y", "h", "n", "u", "j", "m"],
+    "right-middle": ["i", "k"],
+    "right-ring": ["o", "l"],
+    "right-pinky": ["p"],
+  };
+  function fingerOf(key) {
+    for (const f in FINGER_KEYS) if (FINGER_KEYS[f].includes(key)) return f;
+    return "";
+  }
+
+  // 悬浮虚拟键盘（fixed 定位挂 body，不占文档流）+ 虚幻手掌指法提示：
+  // 键盘上方悬浮一双半透明手掌，轮到某键时对应手指会「按下去」触键，同时目标键高亮
   function renderKeyboard() {
     const rows = [
       ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
       ["a", "s", "d", "f", "g", "h", "j", "k", "l"],
       ["z", "x", "c", "v", "b", "n", "m"],
     ];
+    const fingers = ["left-pinky", "left-ring", "left-middle", "left-index", "right-index", "right-middle", "right-ring", "right-pinky"];
     return `
       <div class="keyboard-hint" id="keyboardHint">
+        <div class="hand-hint">
+          ${window.HAND_SVGS ? window.HAND_SVGS.left + window.HAND_SVGS.right : `
+          <div class="hand-palm palm-left"></div>
+          ${fingers.map((f) => `<div class="finger" data-finger="${f}"></div>`).join("")}
+          <div class="hand-palm palm-right"></div>`}
+        </div>
         ${rows
           .map(
             (row) =>
               `<div class="keyboard-row">${row
-                .map((k) => `<div class="key" data-key="${k}">${k}</div>`)
+                .map((k) => {
+                  const f = fingerOf(k);
+                  return `<div class="key" data-key="${k}" data-finger="${f}">${k}</div>`;
+                })
                 .join("")}</div>`
           )
           .join("")}
@@ -774,6 +805,7 @@ const UI = (function () {
     renderContentPicker,
     renderTypingArea,
     renderCustomTextInput,
+    renderKeyboard,
     updateTypingDisplay,
     renderLineBlocks,
     getLineOfIndex,

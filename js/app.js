@@ -85,6 +85,7 @@ const App = (function () {
     keyboardHint: false,
     fuzzy: false,
     punctFilter: false, // 默认不过滤：标点符号也要输入（勾选=跳过标点）
+    keyboardPos: null, // 虚拟键盘拖动后的位置 {x, y}（相对默认居中的偏移），null=默认居中底部
   };
 
   const pageConfigs = {
@@ -185,17 +186,61 @@ const App = (function () {
 
   // ===== Custom Text (自定义文本：手输 / 文件导入 / 拖拽) =====
   function startCustomPractice() {
-    const text = document.getElementById("customTextInput").value.trim();
-    if (text.length < 2) return;
+    const ta = document.getElementById("customTextInput");
+    if (!ta) return;
+    const text = ta.value.trim();
+    if (text.length < 2) {
+      alert("请先输入至少 2 个字符的内容，或点击「导入文本文件」选择 .txt / .md 文件");
+      return;
+    }
     startPractice({ id: "custom", title: "自定义文本", desc: "", content: text }, pageConfigs[currentPage].mode, currentPage);
+  }
+
+  // 文件解码：自动识别 UTF-8（含 BOM）/ UTF-16 / GBK(ANSI)，并清洗文本
+  // （换行统一为 \n、去掉 BOM 隐形字符——否则 direct 模式会把 \r/\uFEFF 当普通字符要求输入，卡死）
+  function decodeFile(bytes) {
+    const u8 = new Uint8Array(bytes);
+    // BOM 检测
+    if (u8.length >= 3 && u8[0] === 0xef && u8[1] === 0xbb && u8[2] === 0xbf) {
+      return new TextDecoder("utf-8").decode(u8.subarray(3));
+    }
+    if (u8.length >= 2 && u8[0] === 0xff && u8[1] === 0xfe) {
+      return new TextDecoder("utf-16le").decode(u8.subarray(2));
+    }
+    if (u8.length >= 2 && u8[0] === 0xfe && u8[1] === 0xff) {
+      return new TextDecoder("utf-16be").decode(u8.subarray(2));
+    }
+    // 无 BOM：先按 UTF-8 严格解码，失败（含非法字节）则回退 GBK
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(u8);
+    } catch (e) {
+      try {
+        return new TextDecoder("gbk").decode(u8);
+      } catch (e2) {
+        return new TextDecoder("utf-8").decode(u8);
+      }
+    }
+  }
+
+  function cleanImportedText(text) {
+    return String(text || "")
+      .replace(/^\uFEFF/, "") // 去掉可能残留的 BOM
+      .replace(/\r\n/g, "\n") // Windows 换行
+      .replace(/\r/g, "\n");   // 孤立 CR
   }
 
   function readTextFile(file) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onload = () => {
+        try {
+          resolve(cleanImportedText(decodeFile(reader.result)));
+        } catch (e) {
+          reject(e);
+        }
+      };
       reader.onerror = () => reject(reader.error);
-      reader.readAsText(file, "UTF-8");
+      reader.readAsArrayBuffer(file);
     });
   }
 
@@ -239,6 +284,7 @@ const App = (function () {
   function navigate(page) {
     currentPage = page;
     stopStatInterval();
+    removeKeyboard(); // 切换页面：兜底收起悬浮键盘
     Game.stop();
     document.querySelectorAll(".nav-item").forEach((el) => {
       el.classList.toggle("active", el.dataset.page === page);
@@ -266,6 +312,36 @@ const App = (function () {
     }
     bindPageEvents();
     UI.updateLevelDisplay(Stats.getSummary());
+  }
+
+  // ===== 二级界面：内容选择（第一级）/ 打字（第二级）切换 =====
+  function showTypingView() {
+    const picker = document.getElementById("pickerView");
+    if (picker) picker.style.display = "none";
+  }
+
+  function showPickerView() {
+    const picker = document.getElementById("pickerView");
+    if (picker) picker.style.display = "";
+    const typing = document.getElementById("typingContainer");
+    if (typing) typing.innerHTML = "";
+  }
+
+  // 返回内容选择列表（保留当前 tab 选择状态）
+  function backToList() {
+    stopStatInterval();
+    removeKeyboard(); // 离开打字视图：收起悬浮键盘
+    if (document.getElementById("pickerView")) {
+      showPickerView();
+      const cfg = pageConfigs[currentPage];
+      if (cfg) {
+        const tab = cfg.tabs.find((t) => t.id === currentTabId);
+        if (tab) selectTab(tab);
+      }
+      return;
+    }
+    // 无二级视图的页面退回 navigate
+    navigate(currentPage);
   }
 
   function bindPageEvents() {
@@ -301,7 +377,7 @@ const App = (function () {
     const retryBtn = document.getElementById("retryBtn");
     if (retryBtn) retryBtn.onclick = () => { if (currentContent) startPractice(currentContent, currentMode, currentCategory); };
     const backBtn = document.getElementById("backBtn");
-    if (backBtn) backBtn.onclick = () => navigate(currentPage);
+    if (backBtn) backBtn.onclick = () => backToList();
     bindTestEvents();
     bindGameEvents();
   }
@@ -329,6 +405,7 @@ const App = (function () {
     currentMode = mode;
     currentCategory = category;
     currentContent = content;
+    showTypingView(); // 二级界面：进入打字视图，隐藏内容选择区
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     TypingEngine.reset();
     TypingEngine.createSession(content.content, mode, { fuzzy: settings.fuzzy, punctFilter: settings.punctFilter });
@@ -338,9 +415,14 @@ const App = (function () {
     UI.updateTypingDisplay(TypingEngine.getState(), mode);
     UI.updateLiveStats(TypingEngine.getStats());
     setupTypingInput();
+    // 开始练习后挂载悬浮键盘并初始化高亮（updateKeyboardHint 只在 updateDisplay 调用，
+    // 开始练习不走 updateDisplay → 键盘渲染了但无高亮）
+    if (settings.keyboardHint) applyKeyboardHint();
     // restartBtn 由 renderTypingArea 动态创建，bindPageEvents 时机太早（navigate 时按钮还不存在），这里重新绑定
     const restartBtn = document.getElementById("restartBtn");
     if (restartBtn) restartBtn.onclick = () => { if (currentContent) startPractice(currentContent, currentMode, currentCategory); };
+    const backToListBtn = document.getElementById("backToListBtn");
+    if (backToListBtn) backToListBtn.onclick = () => backToList();
     startStatInterval();
   }
 
@@ -583,6 +665,7 @@ const App = (function () {
 
   function updateKeyboardHint(state) {
     document.querySelectorAll(".key.active, .key.next").forEach((k) => k.classList.remove("active", "next"));
+    document.querySelectorAll("#keyboardHint .finger.press").forEach((f) => f.classList.remove("press"));
     if (state.currentIndex >= state.tokens.length) return;
     const token = state.tokens[state.currentIndex];
     let nextChar = "";
@@ -597,12 +680,132 @@ const App = (function () {
     }
     if (nextChar && /^[a-z]$/.test(nextChar)) {
       const key = document.querySelector('.key[data-key="' + nextChar + '"]');
-      if (key) key.classList.add("next");
+      if (key) {
+        key.classList.add("next");
+        const f = key.dataset.finger;
+        if (f) {
+          const finger = document.querySelector('.finger[data-finger="' + f + '"]');
+          if (finger) finger.classList.add("press");
+        }
+      }
+    }
+  }
+
+  // 设置里切换「显示键盘提示」后即时生效：挂载/移除悬浮键盘到 body（fixed 悬浮于视口底部，
+  // 不占文档流——嵌入打字区会被长文章挤出视口且页面无滚动条，用户看不到）
+  // 虚拟键盘鼠标拖动（2026-08-13 用户诉求：让虚拟键盘可以被鼠标拖动）：
+  // 按住键盘任意处拖动改变悬浮位置（边界限制不出视口）；位置持久化到 settings.keyboardPos；
+  // 双击键盘恢复默认位置（居中底部）。
+  function enableKeyboardDrag(el) {
+    let dragging = false;
+    let startX = 0,
+      startY = 0,
+      offsetX = 0,
+      offsetY = 0;
+
+    // 解析当前偏移 [x, y]（transform: translate(calc(-50% + Xpx), Ypx)）
+    const getOffset = () => {
+      const m = (el.style.transform || "").match(
+        /translate\(\s*calc\(-50%\s*\+\s*(-?[\d.]+)px\)\s*,\s*(-?[\d.]+)px\s*\)/
+      );
+      return m ? [parseFloat(m[1]), parseFloat(m[2])] : [0, 0];
+    };
+    // 边界限制：键盘不能拖出视口（水平/垂直都 clamp 在 0..视口内）
+    const clamp = (nx, ny) => {
+      const r = el.getBoundingClientRect();
+      const w = r.width,
+        h = r.height;
+      const leftBase = window.innerWidth / 2 - w / 2; // 初始左边缘（50% - w/2）
+      const topBase = window.innerHeight - 14 - h; // 初始 top（bottom:14px）
+      nx = Math.max(-leftBase, Math.min(window.innerWidth - w - leftBase, nx));
+      ny = Math.max(-topBase, Math.min(window.innerHeight - h - topBase, ny));
+      return [nx, ny];
+    };
+    const apply = (nx, ny) => {
+      el.style.transform = `translate(calc(-50% + ${nx}px), ${ny}px)`;
+    };
+    // 恢复默认位置：回到 CSS 默认 translateX(-50%) 居中底部，并清除持久化
+    const reset = () => {
+      el.style.transform = "";
+      if (settings.keyboardPos) settings.keyboardPos = null;
+      saveSettings();
+    };
+
+    // 挂载时恢复上次拖动位置
+    if (settings.keyboardPos) {
+      const [x, y] = clamp(settings.keyboardPos.x, settings.keyboardPos.y);
+      apply(x, y);
+    }
+
+    el.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return; // 仅左键
+      dragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      [offsetX, offsetY] = getOffset();
+      el.style.transition = "none";
+      el.classList.add("dragging");
+      e.preventDefault(); // 防止拖动时选中文本
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const [nx, ny] = clamp(offsetX + (e.clientX - startX), offsetY + (e.clientY - startY));
+      apply(nx, ny);
+      e.preventDefault();
+    });
+    const stopDrag = () => {
+      if (!dragging) return;
+      dragging = false;
+      el.classList.remove("dragging");
+      el.style.transition = "";
+      const [x, y] = getOffset();
+      settings.keyboardPos = { x, y }; // 记住位置，重启/重进保持
+      saveSettings();
+    };
+    document.addEventListener("mouseup", stopDrag);
+    window.addEventListener("blur", stopDrag); // 拖动中窗口失焦兜底
+    // 双击恢复默认位置
+    el.addEventListener("dblclick", reset);
+  }
+
+  // 设置里切换「显示键盘提示」后即时生效：挂载/移除悬浮键盘到 body（fixed 悬浮于视口底部，
+  // 不占文档流——文字区用满全屏，内容靠 main-content 的 padding-bottom 滚动避让，不遮挡）
+  function applyKeyboardHint() {
+    if (!currentContent) return; // 不在打字页
+    const existing = document.getElementById("keyboardHint");
+    if (settings.keyboardHint) {
+      if (!existing) {
+        const wrap = document.createElement("div");
+        wrap.innerHTML = UI.renderKeyboard();
+        const el = wrap.firstElementChild;
+        if (el) {
+          document.body.appendChild(el);
+          document.body.classList.add("has-keyboard");
+          enableKeyboardDrag(el);
+        }
+      }
+      // 已挂载也要刷新高亮：重新开始练习会重建引擎状态（reset+createSession），
+      // 不刷新会残留上一轮最后的按压/高亮（如 restart 后仍高亮 u 而非 q）
+      const state = TypingEngine.getState();
+      if (state) updateKeyboardHint(state);
+    } else if (existing) {
+      existing.remove();
+      document.body.classList.remove("has-keyboard");
+    }
+  }
+
+  // 离开打字场景时移除键盘（完成 / 返回列表 / 切换页面）
+  function removeKeyboard() {
+    const existing = document.getElementById("keyboardHint");
+    if (existing) {
+      existing.remove();
+      document.body.classList.remove("has-keyboard");
     }
   }
 
   function handleComplete() {
     stopStatInterval();
+    removeKeyboard(); // 完成练习：收起悬浮键盘
     playSound("complete");
     const stats = TypingEngine.getStats();
     const result = Stats.recordResult({ ...stats, mode: currentMode, category: currentCategory, title: currentContent ? currentContent.title : "" });
@@ -611,7 +814,7 @@ const App = (function () {
     const retryBtn = document.getElementById("retryBtn");
     if (retryBtn) retryBtn.onclick = () => { if (currentContent) startPractice(currentContent, currentMode, currentCategory); };
     const backBtn = document.getElementById("backBtn");
-    if (backBtn) backBtn.onclick = () => navigate(currentPage);
+    if (backBtn) backBtn.onclick = () => backToList();
   }
 
   function startStatInterval() {
@@ -670,6 +873,9 @@ const App = (function () {
     applyFontSize();
     UI.updateTypingDisplay(TypingEngine.getState(), mode);
     setupTypingInput();
+    if (settings.keyboardHint) applyKeyboardHint(); // 测试页同样挂载悬浮键盘
+    const backToListBtn = document.getElementById("backToListBtn");
+    if (backToListBtn) backToListBtn.onclick = () => backToList();
     startStatInterval();
     if (testConfig.type === "timed") startTestTimer(testConfig.time);
   }
@@ -910,7 +1116,7 @@ const App = (function () {
       applyFontSize(); saveSettings();
     };
     document.getElementById("soundToggle").onchange = (e) => { settings.sound = e.target.checked; saveSettings(); };
-    document.getElementById("keyboardHintToggle").onchange = (e) => { settings.keyboardHint = e.target.checked; saveSettings(); };
+    document.getElementById("keyboardHintToggle").onchange = (e) => { settings.keyboardHint = e.target.checked; saveSettings(); applyKeyboardHint(); };
     document.getElementById("fuzzyToggle").onchange = (e) => { settings.fuzzy = e.target.checked; saveSettings(); };
     document.getElementById("punctFilterToggle").onchange = (e) => { settings.punctFilter = e.target.checked; saveSettings(); };
     document.getElementById("clearDataBtn").onclick = () => {
@@ -931,12 +1137,31 @@ const App = (function () {
     if (toggle && sidebar) toggle.onclick = () => sidebar.classList.toggle("open");
   }
 
+  // 页面缩放控件（topbar − / 100% / +）：缩放由主进程 webContents.setZoomLevel 控制，
+  // 页面通过 preload 暴露的 electronAPI（IPC）发起请求并订阅变更刷新百分比显示。
+  // 浏览器/纯网页环境没有 electronAPI → 隐藏控件（缩放本就不生效）。
+  function setupZoomControls() {
+    const controls = document.getElementById("zoomControls");
+    const outBtn = document.getElementById("zoomOutBtn");
+    const resetBtn = document.getElementById("zoomResetBtn");
+    const inBtn = document.getElementById("zoomInBtn");
+    if (!window.electronAPI) { if (controls) controls.style.display = "none"; return; }
+    let level = 0; // 当前缩放级别（0 = 100%），每次启动主进程都会重置为 0
+    const render = () => { if (resetBtn) resetBtn.textContent = Math.round(100 * Math.pow(1.2, level)) + "%"; };
+    window.electronAPI.onZoomChanged((l) => { level = l; render(); });
+    if (inBtn) inBtn.onclick = () => window.electronAPI.setZoom(Math.min(6, level + 0.5));
+    if (outBtn) outBtn.onclick = () => window.electronAPI.setZoom(Math.max(-4, level - 0.5));
+    if (resetBtn) resetBtn.onclick = () => window.electronAPI.setZoom(0); // 恢复原始大小
+    render();
+  }
+
   function init() {
     initAudio();
     loadSettings();
     setupSettingsModal();
     setupThemeToggle();
     setupSidebarToggle();
+    setupZoomControls();
     navigate("home");
     UI.updateLevelDisplay(Stats.getSummary());
   }
